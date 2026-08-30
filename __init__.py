@@ -1,1 +1,1 @@
-"""Tests module"""
+"""Monitoring module"""
