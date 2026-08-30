@@ -1,0 +1,7 @@
+[core]
+    remote = local_remote
+['remote "local_remote"']
+    url = ../dvc-storage
+    # Swap for a real remote before submission, e.g.:
+    # url = s3://my-bucket/mlops-cats-dogs
+    # url = gdrive://<folder-id>
