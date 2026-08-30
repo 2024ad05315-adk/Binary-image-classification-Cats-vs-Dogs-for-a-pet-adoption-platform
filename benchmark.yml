@@ -1,0 +1,103 @@
+name: Performance Benchmark
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'app/**'
+      - 'Dockerfile'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu torch==2.3.1 torchvision==0.18.1
+          pip install -r requirements.txt
+
+      - name: Build Docker images
+        run: |
+          docker build -t cats-dogs-simplecnn:test --build-arg MODEL_TYPE=simplecnn .
+          docker build -t cats-dogs-resnet50:test --build-arg MODEL_TYPE=resnet50 .
+
+      - name: Start services
+        run: |
+          docker run -d -p 8000:8000 --name simplecnn cats-dogs-simplecnn:test
+          docker run -d -p 8001:8000 --name resnet50 cats-dogs-resnet50:test
+          sleep 15
+
+      - name: Run performance benchmarks
+        run: |
+          python -c "
+          import requests
+          import time
+          import json
+          from PIL import Image
+          import io
+          
+          def benchmark_endpoint(url, name, iterations=10):
+              times = []
+              img = Image.new('RGB', (224, 224))
+              
+              for i in range(iterations):
+                  img_bytes = io.BytesIO()
+                  img.save(img_bytes, format='JPEG')
+                  img_bytes.seek(0)
+                  
+                  start = time.time()
+                  response = requests.post(f'{url}/predict', files={'file': ('test.jpg', img_bytes, 'image/jpeg')})
+                  elapsed = (time.time() - start) * 1000
+                  
+                  if response.status_code == 200:
+                      times.append(elapsed)
+              
+              if times:
+                  avg = sum(times) / len(times)
+                  min_t = min(times)
+                  max_t = max(times)
+                  print(f'{name}:')
+                  print(f'  Avg: {avg:.2f}ms')
+                  print(f'  Min: {min_t:.2f}ms')
+                  print(f'  Max: {max_t:.2f}ms')
+                  return avg
+              return None
+          
+          print('Performance Benchmark Results')
+          print('=' * 50)
+          simplecnn_time = benchmark_endpoint('http://localhost:8000', 'SimpleCNN')
+          resnet50_time = benchmark_endpoint('http://localhost:8001', 'ResNet50')
+          
+          if simplecnn_time and resnet50_time:
+              print(f'\\nComparison: ResNet50 is {resnet50_time/simplecnn_time:.2f}x slower')
+          "
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker stop simplecnn resnet50 || true
+          docker rm simplecnn resnet50 || true
+
+      - name: Comment benchmark results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✓ Performance benchmarks completed. Check the run logs for detailed results.'
+            })

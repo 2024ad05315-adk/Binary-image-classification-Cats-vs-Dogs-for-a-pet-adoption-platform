@@ -1,0 +1,61 @@
+name: CD - Deploy & Smoke Test
+
+on:
+  workflow_run:
+    workflows: ["CI - Build, Test & Image Creation"]
+    branches: [main]
+    types: [completed]
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}/cats-dogs-inference
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull latest image
+        run: docker pull ${{ env.IMAGE_NAME }}:latest
+
+      - name: Deploy via Docker Compose
+        working-directory: deployment
+        run: |
+          export IMAGE=${{ env.IMAGE_NAME }}:latest
+          docker compose down || true
+          docker compose up -d
+
+      - name: Wait for service to be healthy
+        run: |
+          for i in {1..15}; do
+            if curl -sf http://localhost:8000/health; then
+              echo "Service is healthy"; exit 0
+            fi
+            echo "Waiting for service... ($i)"; sleep 4
+          done
+          echo "Service did not become healthy in time"; exit 1
+
+      - name: Run smoke tests
+        run: |
+          chmod +x deployment/smoke_test.sh
+          ./deployment/smoke_test.sh http://localhost:8000
+
+      - name: Roll back on smoke test failure
+        if: failure()
+        working-directory: deployment
+        run: |
+          echo "Smoke tests failed - rolling back to previous image"
+          docker compose down
